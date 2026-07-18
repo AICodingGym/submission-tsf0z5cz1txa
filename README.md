@@ -31,3 +31,22 @@ conda run -n 1011 aicodinggym mle submit \
   -F submission.csv \
   -m "5-fold word+char TF-IDF Ridge baseline with OOF thresholds"
 ```
+
+## Stage 2: engineered feature blend
+
+The second stage adds a separate nonlinear model over 56 interpretable essay
+features. They cover length, sentence and paragraph structure, lexical
+diversity, punctuation, discourse markers, pronouns, readability, and simple
+writing-error proxies. Keeping this branch separate lets the model learn
+nonlinear relationships (for example, essay length has diminishing returns)
+without densifying the large TF-IDF matrix.
+
+```bash
+conda run -n 1011 python train_stage2.py
+conda run -n 1011 python -m unittest discover -s tests -v
+```
+
+The script creates `stage2_submission.csv` and `stage2_metrics.json`. Both the
+blend weight and ordinal score thresholds are selected only from aligned OOF
+predictions. The test predictions are untouched until those parameters are
+fixed.

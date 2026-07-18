@@ -52,3 +52,5 @@ models/
 # reproducible baseline outputs
 submission.csv
 baseline_metrics.json
+stage2_submission.csv
+stage2_metrics.json
