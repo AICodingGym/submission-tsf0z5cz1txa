@@ -48,3 +48,7 @@ outputs/
 artifacts/
 models/
 *.log
+
+# reproducible baseline outputs
+submission.csv
+baseline_metrics.json
