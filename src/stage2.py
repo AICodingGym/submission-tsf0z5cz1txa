@@ -4,11 +4,10 @@ from dataclasses import dataclass
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.model_selection import StratifiedKFold
-
 from src.baseline import (
     BaselineConfig,
     apply_thresholds,
+    cross_validation_splits,
     optimize_thresholds,
     quadratic_weighted_kappa,
 )
@@ -29,20 +28,20 @@ def train_cross_validated_feature_model(
     test_features: np.ndarray,
     baseline_config: BaselineConfig,
     stage2_config: Stage2Config,
+    fold_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, float | int]]]:
     """Train a nonlinear model on compact hand-engineered essay features."""
-    splitter = StratifiedKFold(
-        n_splits=baseline_config.n_splits,
-        shuffle=True,
-        random_state=baseline_config.seed,
-    )
     oof = np.zeros(len(train_features), dtype=np.float64)
     test_predictions = np.zeros(len(test_features), dtype=np.float64)
     fold_metrics: list[dict[str, float | int]] = []
 
-    for fold, (train_index, valid_index) in enumerate(
-        splitter.split(train_features, labels), 1
-    ):
+    splits = cross_validation_splits(
+        labels,
+        baseline_config.n_splits,
+        baseline_config.seed,
+        fold_ids=fold_ids,
+    )
+    for fold, (train_index, valid_index) in enumerate(splits, 1):
         model = HistGradientBoostingRegressor(
             loss="squared_error",
             learning_rate=stage2_config.learning_rate,
@@ -114,3 +113,40 @@ def optimize_blend(
     blended = best_weight * text_oof + (1.0 - best_weight) * feature_oof
     best_thresholds, best_score = optimize_thresholds(labels, blended)
     return best_weight, best_thresholds, best_score
+
+
+def crossfit_blend(
+    labels: np.ndarray,
+    text_oof: np.ndarray,
+    feature_oof: np.ndarray,
+    fold_ids: np.ndarray,
+) -> tuple[np.ndarray, float, list[dict[str, object]]]:
+    """Tune calibration on four folds and apply it to the untouched fifth."""
+    if not (labels.shape == text_oof.shape == feature_oof.shape == fold_ids.shape):
+        raise ValueError("Labels, OOF predictions, and fold IDs must align")
+    predictions = np.zeros(len(labels), dtype=np.int8)
+    fold_parameters: list[dict[str, object]] = []
+    for fold in sorted(np.unique(fold_ids)):
+        calibration = fold_ids != fold
+        evaluation = fold_ids == fold
+        weight, thresholds, calibration_qwk = optimize_blend(
+            labels[calibration], text_oof[calibration], feature_oof[calibration]
+        )
+        raw = weight * text_oof[evaluation] + (1.0 - weight) * feature_oof[
+            evaluation
+        ]
+        predictions[evaluation] = apply_thresholds(raw, thresholds)
+        evaluation_qwk = quadratic_weighted_kappa(
+            labels[evaluation], predictions[evaluation]
+        )
+        fold_parameters.append(
+            {
+                "fold": int(fold),
+                "text_weight": weight,
+                "feature_weight": 1.0 - weight,
+                "thresholds": thresholds.tolist(),
+                "calibration_qwk": calibration_qwk,
+                "evaluation_qwk": evaluation_qwk,
+            }
+        )
+    return predictions, quadratic_weighted_kappa(labels, predictions), fold_parameters

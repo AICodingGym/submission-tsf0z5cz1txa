@@ -47,6 +47,7 @@ checkpoints/
 outputs/
 artifacts/
 models/
+.cache/
 *.log
 
 # reproducible baseline outputs

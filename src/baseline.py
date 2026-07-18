@@ -62,6 +62,40 @@ def load_competition_data(
     return train_texts, labels, test_texts, test_ids
 
 
+def load_train_ids(archive_path: Path) -> list[str]:
+    with zipfile.ZipFile(archive_path) as archive:
+        train_rows = _read_csv_from_zip(archive, "train.csv")
+    train_ids = [row["essay_id"] for row in train_rows]
+    if len(train_ids) != len(set(train_ids)):
+        raise ValueError("Duplicate essay_id found in train.csv")
+    return train_ids
+
+
+def cross_validation_splits(
+    labels: np.ndarray,
+    n_splits: int,
+    seed: int,
+    fold_ids: np.ndarray | None = None,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    if fold_ids is None:
+        splitter = StratifiedKFold(
+            n_splits=n_splits, shuffle=True, random_state=seed
+        )
+        placeholder = np.zeros(len(labels), dtype=np.int8)
+        return list(splitter.split(placeholder, labels))
+    fold_ids = np.asarray(fold_ids)
+    if fold_ids.shape != labels.shape:
+        raise ValueError("fold_ids must have the same shape as labels")
+    expected = set(range(n_splits))
+    if set(map(int, np.unique(fold_ids))) != expected:
+        raise ValueError(f"fold_ids must contain exactly {sorted(expected)}")
+    all_indices = np.arange(len(labels))
+    return [
+        (all_indices[fold_ids != fold], all_indices[fold_ids == fold])
+        for fold in range(n_splits)
+    ]
+
+
 def build_vectorizer(config: BaselineConfig) -> FeatureUnion:
     """Create complementary word- and character-level TF-IDF features."""
     word = TfidfVectorizer(
@@ -169,16 +203,17 @@ def train_cross_validated_baseline(
     labels: np.ndarray,
     test_texts: list[str],
     config: BaselineConfig,
+    fold_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, float | int]]]:
-    splitter = StratifiedKFold(
-        n_splits=config.n_splits, shuffle=True, random_state=config.seed
-    )
     oof = np.zeros(len(train_texts), dtype=np.float64)
     test_predictions = np.zeros(len(test_texts), dtype=np.float64)
     fold_metrics: list[dict[str, float | int]] = []
     texts = np.asarray(train_texts, dtype=object)
 
-    for fold, (train_index, valid_index) in enumerate(splitter.split(texts, labels), 1):
+    splits = cross_validation_splits(
+        labels, config.n_splits, config.seed, fold_ids=fold_ids
+    )
+    for fold, (train_index, valid_index) in enumerate(splits, 1):
         print(f"\n[fold {fold}/{config.n_splits}] fitting TF-IDF", flush=True)
         vectorizer = build_vectorizer(config)
         train_features = vectorizer.fit_transform(texts[train_index])

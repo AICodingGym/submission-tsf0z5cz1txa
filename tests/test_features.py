@@ -4,7 +4,7 @@ import numpy as np
 
 from src.baseline import apply_thresholds
 from src.features import FEATURE_NAMES, extract_essay_features, extract_feature_matrix
-from src.stage2 import optimize_blend
+from src.stage2 import crossfit_blend, optimize_blend
 
 
 class FeatureExtractionTest(unittest.TestCase):
@@ -44,6 +44,18 @@ class BlendTest(unittest.TestCase):
         predictions = apply_thresholds(
             weight * text + (1.0 - weight) * features, thresholds
         )
+        self.assertTrue(np.all((predictions >= 1) & (predictions <= 6)))
+
+    def test_crossfit_blend_covers_each_row_once(self) -> None:
+        labels = np.tile(np.arange(1, 7), 10).astype(np.int8)
+        text = labels + np.linspace(-0.2, 0.2, len(labels))
+        features = labels + np.linspace(0.2, -0.2, len(labels))
+        folds = np.arange(len(labels), dtype=np.int8) % 5
+        predictions, score, parameters = crossfit_blend(
+            labels, text, features, folds
+        )
+        self.assertEqual(len(parameters), 5)
+        self.assertGreater(score, 0.95)
         self.assertTrue(np.all((predictions >= 1) & (predictions <= 6)))
 
 

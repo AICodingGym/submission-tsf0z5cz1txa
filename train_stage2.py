@@ -12,6 +12,7 @@ from src.baseline import (
     BaselineConfig,
     apply_thresholds,
     load_competition_data,
+    load_train_ids,
     optimize_thresholds,
     quadratic_weighted_kappa,
     train_cross_validated_baseline,
@@ -22,7 +23,13 @@ from src.features import (
     extract_feature_matrix,
     feature_target_correlations,
 )
-from src.stage2 import Stage2Config, optimize_blend, train_cross_validated_feature_model
+from src.folds import load_fold_manifest
+from src.stage2 import (
+    Stage2Config,
+    crossfit_blend,
+    optimize_blend,
+    train_cross_validated_feature_model,
+)
 
 
 DEFAULT_ARCHIVE = Path("data/learning-agency-lab-automated-essay-scoring-2.zip")
@@ -40,6 +47,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=8.0)
+    parser.add_argument(
+        "--folds-file", type=Path, default=Path("artifacts/folds.csv")
+    )
+    parser.add_argument(
+        "--predictions-output",
+        type=Path,
+        default=Path("artifacts/stage2_predictions.npz"),
+    )
     return parser.parse_args()
 
 
@@ -54,6 +69,8 @@ def main() -> None:
     )
     stage2_config = Stage2Config()
     train_texts, labels, test_texts, test_ids = load_competition_data(args.data)
+    train_ids = load_train_ids(args.data)
+    fold_ids = load_fold_manifest(args.folds_file, train_ids)
     print(
         f"Loaded {len(train_texts):,} train essays and {len(test_texts):,} test essays",
         flush=True,
@@ -71,17 +88,21 @@ def main() -> None:
             test_features,
             baseline_config,
             stage2_config,
+            fold_ids=fold_ids,
         )
     )
     print("\nTraining TF-IDF text branch", flush=True)
     text_oof, text_test, text_fold_metrics = train_cross_validated_baseline(
-        train_texts, labels, test_texts, baseline_config
+        train_texts, labels, test_texts, baseline_config, fold_ids=fold_ids
     )
 
     text_optimized_qwk = optimized_score(labels, text_oof)
     feature_optimized_qwk = optimized_score(labels, feature_oof)
     text_weight, thresholds, blended_qwk = optimize_blend(
         labels, text_oof, feature_oof
+    )
+    crossfit_predictions, crossfit_qwk, crossfit_parameters = crossfit_blend(
+        labels, text_oof, feature_oof, fold_ids
     )
     blended_test = text_weight * text_test + (1.0 - text_weight) * feature_test
     test_scores = apply_thresholds(blended_test, thresholds)
@@ -103,6 +124,8 @@ def main() -> None:
         "feature_oof_optimized_qwk": feature_optimized_qwk,
         "blend_oof_rounded_qwk": quadratic_weighted_kappa(labels, rounded_blend),
         "blend_oof_optimized_qwk": blended_qwk,
+        "blend_crossfit_qwk": crossfit_qwk,
+        "blend_crossfit_parameters": crossfit_parameters,
         "text_weight": text_weight,
         "feature_weight": 1.0 - text_weight,
         "optimized_thresholds": thresholds.tolist(),
@@ -111,11 +134,25 @@ def main() -> None:
         ),
     }
     args.metrics.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    args.predictions_output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        args.predictions_output,
+        train_ids=np.asarray(train_ids),
+        test_ids=np.asarray(test_ids),
+        fold_ids=fold_ids,
+        labels=labels,
+        text_oof=text_oof,
+        feature_oof=feature_oof,
+        text_test=text_test,
+        feature_test=feature_test,
+        crossfit_predictions=crossfit_predictions,
+    )
 
     print("\nStage 2 training complete", flush=True)
     print(f"Text-only optimized QWK:    {text_optimized_qwk:.6f}", flush=True)
     print(f"Feature-only optimized QWK: {feature_optimized_qwk:.6f}", flush=True)
     print(f"Blended optimized QWK:      {blended_qwk:.6f}", flush=True)
+    print(f"Blended cross-fit QWK:      {crossfit_qwk:.6f}", flush=True)
     print(
         f"Blend weights: text={text_weight:.4f}, features={1.0 - text_weight:.4f}",
         flush=True,
